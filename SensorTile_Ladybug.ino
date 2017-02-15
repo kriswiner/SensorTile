@@ -18,7 +18,7 @@
 #include "Wire.h"   
 #include <RTC.h>
 
-// Must immediately declare functions to avoid "Not declared in this scope" errors on ESP8285
+// Must immediately declare functions to avoid "Not declared in this scope" errors
 void      I2Cscan();
 void      writeByte(uint8_t address, uint8_t subAddress, uint8_t data);
 uint8_t   readByte(uint8_t address, uint8_t subAddress);
@@ -64,6 +64,7 @@ uint32_t  BME280_compensate_H(int32_t adc_H);
 #define CCS811_FW_BOOT_VERSION    0x23
 #define CCS811_FW_APP_VERSION     0x24
 #define CCS811_ERROR_ID           0xE0
+#define CCS811_APP_START          0xF4
 #define CCS811_SW_RESET           0xFF
 
 // See also MPU-9250 Register Map and Descriptions, Revision 4.0, RM-MPU-9250A-00, Rev. 1.4, 9/9/2013 for registers not listed in 
@@ -243,8 +244,18 @@ enum SBy {
   t_500ms,
   t_1000ms,
   t_10ms,
-  t_20ms,
+  t_20ms
 };
+
+enum AQRate {  // specify  frequency of air quality measurement
+  dt_idle = 0,
+  dt_1sec = 1,
+  dt_10sec,
+  dt_60sec
+};
+
+// Specify CCS811 rate
+uint8_t AQRate = dt_10sec;
 
 // Specify MPU6500 sensor full scale
 uint8_t Gscale = GFS_250DPS;
@@ -258,7 +269,7 @@ uint8_t Posr = P_OSR_16, Hosr = H_OSR_16, Tosr = T_OSR_02, Mode = normal, IIRFil
 int32_t t_fine;
 
 float Temperature, Pressure, Humidity; // stores BME280 pressures sensor pressure and temperature
-uint32_t rawPress, rawTemp;   // pressure and temperature raw count output for BME280
+uint32_t rawPress, rawTemp, compHumidity, compTemp;   // pressure and temperature raw count output for BME280
 uint16_t rawHumidity;  // variables to hold raw BME280 humidity value
 
 // BME280 compensation parameters
@@ -298,7 +309,8 @@ const byte CCS811Enable = A2;
 const byte VbatMon = A4;
 const byte MPU6500Interrupt = 1;
 
-bool newData = false;
+bool newMPU6500Data = false;
+bool newCCS811Data  = false;
 
 void setup()
 {
@@ -306,13 +318,13 @@ void setup()
   delay(4000);
 
   pinMode(myLed, OUTPUT);
-  digitalWrite(myLed, HIGH);
+  digitalWrite(myLed, HIGH); // start with led on
 
   pinMode(VbatMon, INPUT);
   analogReadResolution(12); // take advantage of 12-bit ADCs
 
   pinMode(MPU6500Interrupt, INPUT);
-  pinMode(CCS811Interrupt, INPUT);
+  pinMode(CCS811Interrupt, INPUT_PULLUP); // active LOW
 
   pinMode(CCS811Enable, OUTPUT);
   digitalWrite(CCS811Enable, LOW); // set LOW to enable the CCS811 air quality sensor
@@ -369,108 +381,45 @@ void setup()
   Serial.print("z-axis self test: gyration trim within : "); Serial.print(SelfTest[5],1); Serial.println("% of factory value");
   delay(1000);
 
-   // get MPU6500 resolutions, only need to do this once
-   getAres();
-   getGres();
+    // get MPU6500 resolutions, only need to do this once
+    getAres();
+    getGres();
 
-   Serial.println("Calibrate gyro and accel"); Serial.println(" ");
-   accelgyrocalMPU6500(gyroBias, accelBias); // Calibrate gyro and accelerometers, load biases in bias registers
-   Serial.println("accel biases (mg)"); Serial.println(1000.*accelBias[0]); Serial.println(1000.*accelBias[1]); Serial.println(1000.*accelBias[2]);
-   Serial.println("gyro biases (dps)"); Serial.println(gyroBias[0]); Serial.println(gyroBias[1]); Serial.println(gyroBias[2]);
+    Serial.println("Calibrate gyro and accel"); Serial.println(" ");
+    accelgyrocalMPU6500(gyroBias, accelBias); // Calibrate gyro and accelerometers, load biases in bias registers
+    Serial.println("accel biases (mg)"); Serial.println(1000.*accelBias[0]); Serial.println(1000.*accelBias[1]); Serial.println(1000.*accelBias[2]);
+    Serial.println("gyro biases (dps)"); Serial.println(gyroBias[0]); Serial.println(gyroBias[1]); Serial.println(gyroBias[2]);
 
-   initMPU6500(); 
-   Serial.println("MPU6500 initialized for active data mode...."); // Initialize device for active mode read of acclerometer, gyroscope, and temperature
-   Serial.println(" ");
+    initMPU6500(); 
+    Serial.println("MPU6500 initialized for active data mode...."); // Initialize device for active mode read of acclerometer, gyroscope, and temperature
+    Serial.println(" ");
    
-  writeByte(BME280_ADDRESS, BME280_RESET, 0xB6); // reset BME280 before initialization
-  delay(100);
+    writeByte(BME280_ADDRESS, BME280_RESET, 0xB6); // reset BME280 before initialization
+    delay(100);
 
-  BME280Init(); // Initialize BME280 altimeter
-  Serial.println("Calibration coefficients:");
-  Serial.print("dig_T1 ="); 
-  Serial.println(dig_T1);
-  Serial.print("dig_T2 ="); 
-  Serial.println(dig_T2);
-  Serial.print("dig_T3 ="); 
-  Serial.println(dig_T3);
-  Serial.print("dig_P1 ="); 
-  Serial.println(dig_P1);
-  Serial.print("dig_P2 ="); 
-  Serial.println(dig_P2);
-  Serial.print("dig_P3 ="); 
-  Serial.println(dig_P3);
-  Serial.print("dig_P4 ="); 
-  Serial.println(dig_P4);
-  Serial.print("dig_P5 ="); 
-  Serial.println(dig_P5);
-  Serial.print("dig_P6 ="); 
-  Serial.println(dig_P6);
-  Serial.print("dig_P7 ="); 
-  Serial.println(dig_P7);
-  Serial.print("dig_P8 ="); 
-  Serial.println(dig_P8);
-  Serial.print("dig_P9 ="); 
-  Serial.println(dig_P9);
-  Serial.print("dig_H1 ="); 
-  Serial.println(dig_H1);
-  Serial.print("dig_H2 ="); 
-  Serial.println(dig_H2);
-  Serial.print("dig_H3 ="); 
-  Serial.println(dig_H3);
-  Serial.print("dig_H4 ="); 
-  Serial.println(dig_H4);
-  Serial.print("dig_H5 ="); 
-  Serial.println(dig_H5);
-  Serial.print("dig_H6 ="); 
-  Serial.println(dig_H6);
-  Serial.println(" ");
+    BME280Init(); // Initialize BME280 altimeter
 
-  digitalWrite(CCS811Enable, LOW); // set LOW to enable the CCS811 air quality sensor
 
-// initialize CCS811 and check version and status
-  byte HWVersion = readByte(CCS811_ADDRESS, CCS811_HW_VERSION);
-  Serial.print("CCS811 Hardware Version = 0x"); Serial.println(HWVersion, HEX); 
 
-  uint8_t FWBootVersion[2] = {0, 0}, FWAppVersion[2] = {0,0};
-  readBytes(CCS811_ADDRESS, CCS811_FW_BOOT_VERSION, 2, &FWBootVersion[0]);
-  Serial.println("CCS811 Firmware Boot Version: "); 
-  Serial.print("Major = "); Serial.println((FWBootVersion[1] & 0xF0) >> 4); 
-  Serial.print("Minor = "); Serial.println(FWBootVersion[1] & 0x04); 
-  Serial.print("Trivial = "); Serial.println(FWBootVersion[0]); 
-  
-  readBytes(CCS811_ADDRESS, CCS811_FW_APP_VERSION, 2, &FWAppVersion[0]);
-  Serial.println("CCS811 Firmware App Version: "); 
-  Serial.print("Major = "); Serial.println((FWAppVersion[1] & 0xF0) >> 4); 
-  Serial.print("Minor = "); Serial.println(FWAppVersion[1] & 0x04); 
-  Serial.print("Trivial = "); Serial.println(FWAppVersion[0]); 
+    // initialize CCS811 and check version and status
+    digitalWrite(CCS811Enable, LOW); // set LOW to enable the CCS811 air quality sensor
+    delay(1);
+    CCS811init();
+    digitalWrite(CCS811Enable, HIGH); // set LOW to enable the CCS811 air quality sensor
 
-  // set CCS811 measurement mode
-  writeByte(CCS811_ADDRESS, CCS811_MEAS_MODE, 0x30); // pulsed heating mode
-  uint8_t measmode = readByte(CCS811_ADDRESS, CCS811_MEAS_MODE);
-  Serial.print("Confirm measurement mode = 0x"); Serial.println(measmode, HEX);
-
-  uint8_t status = readByte(CCS811_ADDRESS, CCS811_STATUS);
-  if(status & 0x80) Serial.println("Firmware is in application mode. CCS811 is ready!");
-  if(status & 0x10) Serial.println("Valid application firmware loaded!");
-  Serial.print("status = 0X"); Serial.println(status, HEX);
-  Serial.println(" ");
-
-  digitalWrite(CCS811Enable, HIGH); // set LOW to enable the CCS811 air quality sensor
-
-  delay(1000);
-
-  attachInterrupt(MPU6500Interrupt, myinthandler, RISING);
+    attachInterrupt(MPU6500Interrupt, myinthandler1, RISING); // enable MPU6500 interrupt
+    attachInterrupt(CCS811Interrupt,  myinthandler2, FALLING); // enable CCS811 interrupt
   
  }
-  else Serial.println(" BME280 not functioning!");
+    else Serial.println(" BME280 not functioning!");
 }
 
 void loop()
 {
     // MPU6500 data
-    // If intPin goes high, all data registers have new data
-    if(newData == true) {  // On interrupt, read data
-     newData = false;  // reset newData flag
+    // If intPin goes HIGH, all data registers have new data
+    if(newMPU6500Data == true) {  // On interrupt, read data
+     newMPU6500Data = false;  // reset newData flag
      
      readMPU6500Data(MPU6500Data); // INT cleared on any read
    
@@ -499,13 +448,15 @@ void loop()
     
     // BME280 Data
     rawTemp =   readBME280Temperature();
-    temperature_C = (float) BME280_compensate_T(rawTemp)/100.0f; // temperature in Centigrade
+    compTemp = BME280_compensate_T(rawTemp);
+    temperature_C = (float) compTemp/100.0f; // temperature in Centigrade
     temperature_F = 9.0f*temperature_C/5.0f + 32.0f;
     rawPress =  readBME280Pressure();
     pressure = (float) BME280_compensate_P(rawPress)/25600.0f; // Pressure in millibar
     altitude = 145366.45f*(1.0f - powf((pressure/1013.25f), 0.190284f));
     rawHumidity =  readBME280Humidity();
-    humidity = (float) BME280_compensate_H(rawHumidity)/1024.0f; // Humidity in %RH
+    compHumidity = BME280_compensate_H(rawHumidity);
+    humidity = (float)compHumidity/1024.0f; // Humidity in %RH
 
       Serial.println("BME280:");
       Serial.print("Altimeter temperature = "); 
@@ -528,10 +479,37 @@ void loop()
 
       // CCS811 data 
       digitalWrite(CCS811Enable, LOW); // set LOW to enable the CCS811 air quality sensor
+      delay(1);
       Serial.println("CCS811:");
+
+
+      // Update CCS811 humidity and temperature compensation
+      uint8_t temp[5] = {0, 0, 0, 0, 0};
+      temp[0] = CCS811_ENV_DATA;
+      temp[1] = ((compHumidity % 1024) / 100) > 7 ? (compHumidity/1024 + 1)<<1 : (compHumidity/1024)<<1;
+      temp[2] = 0;
+      if(((compHumidity % 1024) / 100) > 2 && (((compHumidity % 1024) / 100) < 8))
+      {
+       temp[1] |= 1;
+      }
+
+      compTemp += 2500;
+      temp[3] = ((compTemp % 100) / 100) > 7 ? (compTemp/100 + 1)<<1 : (compTemp/100)<<1;
+      temp[4] = 0;
+      if(((compTemp % 100) / 100) > 2 && (((compTemp % 100) / 100) < 8))
+      {
+       temp[3] |= 1;
+      }
+      
+      Wire.transfer(CCS811_ADDRESS, &temp[0], 5, NULL, 0);
+
             
-      uint8_t status = readByte(CCS811_ADDRESS, CCS811_STATUS);
-      Serial.print("status = 0x"); Serial.println(status);
+     // If intPin goes LOW, all data registers have new data
+     if(newCCS811Data == true) {  // On interrupt, read data
+      newCCS811Data = false;  // reset newData flag
+     
+     uint8_t status = readByte(CCS811_ADDRESS, CCS811_STATUS);
+      Serial.print("status = 0x"); Serial.println(status, HEX);
       
       if(status & 0x01) { // check for errors
         uint8_t error = readByte(CCS811_ADDRESS, CCS811_ERROR_ID);
@@ -543,20 +521,18 @@ void loop()
         if(error & 0x20) Serial.println("Heater voltage is not being applied correctly!");
       }
       
-//      if(status & 0x08) { // poll for data ready
+ //     if(status & 0x08) { // poll for data ready
 
       uint8_t rawData[8] = {0, 0, 0, 0, 0, 0, 0, 0};
       readBytes(CCS811_ADDRESS, CCS811_ALG_RESULT_DATA, 8, &rawData[0]);
       
       uint16_t eCO2 = (uint16_t) ((uint16_t) rawData[7] << 8 | rawData[6]);
       Serial.print("Eq CO2 in ppm = "); Serial.println(eCO2);
-       uint16_t TVOC = (uint16_t) ((uint16_t) rawData[5] << 8 | rawData[4]);
-      Serial.print("TVOC in ppm = "); Serial.println(TVOC);
-      Serial.print("status = 0x"); Serial.println(rawData[3], HEX);
-      Serial.print("error = 0x"); Serial.println(rawData[2], HEX);
+      uint16_t TVOC = (uint16_t) ((uint16_t) rawData[5] << 8 | rawData[4]);
+      Serial.print("TVOC in ppb = "); Serial.println(TVOC);
       Serial.print("Sensor current (uA) = "); Serial.println( (rawData[1] & 0xFC)>> 2);
-      Serial.print("Sensor voltage (V) = "); Serial.println( (float) (((uint16_t)(rawData[0] & 0x02) << 8) | rawData[0]) * ( 1.65/1023.0));
-//      }
+      Serial.print("Sensor voltage (V) = "); Serial.println( (float) (((uint16_t)(rawData[1] & 0x02) << 8) | rawData[0]) * ( 1.65/1023.0));
+      }
       
       digitalWrite(CCS811Enable, HIGH); // set LOW to enable the CCS811 air quality sensor
       Serial.println(" ");
@@ -589,7 +565,6 @@ void loop()
       Serial.print(Month); Serial.print("/"); Serial.print(Day); Serial.print("/"); Serial.println(Year);
       Serial.println(" ");
       
-//      digitalWrite(myLed, !digitalRead(myLed)); // flash led
       digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
       delay(1000); 
 
@@ -600,9 +575,14 @@ void loop()
 //====== Set of useful functions
 //===================================================================================================================
 
-void myinthandler()
+void myinthandler1()
 {
-  newData = true;
+  newMPU6500Data = true;
+}
+
+void myinthandler2()
+{
+  newCCS811Data = true;
 }
 
   void getGres() {
@@ -646,7 +626,6 @@ void getAres() {
           break;
   }
 }
-
 
 void readMPU6500Data(int16_t * destination)
 {
@@ -1032,6 +1011,45 @@ void BME280Init()
   dig_H4 = ( int16_t)(((( int16_t) calib[3] << 8) | (0x0F & calib[4]) << 4) >> 4);
   dig_H5 = ( int16_t)(((( int16_t) calib[5] << 8) | (0xF0 & calib[4]) ) >> 4 );
   dig_H6 = calib[6];
+
+  Serial.println("Calibration coefficients:");
+  Serial.print("dig_T1 ="); 
+  Serial.println(dig_T1);
+  Serial.print("dig_T2 ="); 
+  Serial.println(dig_T2);
+  Serial.print("dig_T3 ="); 
+  Serial.println(dig_T3);
+  Serial.print("dig_P1 ="); 
+  Serial.println(dig_P1);
+  Serial.print("dig_P2 ="); 
+  Serial.println(dig_P2);
+  Serial.print("dig_P3 ="); 
+  Serial.println(dig_P3);
+  Serial.print("dig_P4 ="); 
+  Serial.println(dig_P4);
+  Serial.print("dig_P5 ="); 
+  Serial.println(dig_P5);
+  Serial.print("dig_P6 ="); 
+  Serial.println(dig_P6);
+  Serial.print("dig_P7 ="); 
+  Serial.println(dig_P7);
+  Serial.print("dig_P8 ="); 
+  Serial.println(dig_P8);
+  Serial.print("dig_P9 ="); 
+  Serial.println(dig_P9);
+  Serial.print("dig_H1 ="); 
+  Serial.println(dig_H1);
+  Serial.print("dig_H2 ="); 
+  Serial.println(dig_H2);
+  Serial.print("dig_H3 ="); 
+  Serial.println(dig_H3);
+  Serial.print("dig_H4 ="); 
+  Serial.println(dig_H4);
+  Serial.print("dig_H5 ="); 
+  Serial.println(dig_H5);
+  Serial.print("dig_H6 ="); 
+  Serial.println(dig_H6);
+  Serial.println(" ");
 }
 
 // Returns temperature in DegC, resolution is 0.01 DegC. Output value of
@@ -1086,6 +1104,68 @@ var = (var < 0 ? 0 : var);
 var = (var > 419430400 ? 419430400 : var);
 return(uint32_t)(var >> 12);
 }
+
+void checkCCS811Status() 
+{
+    // Check CCS811 status
+  uint8_t status = readByte(CCS811_ADDRESS, CCS811_STATUS);
+  Serial.print("status = 0X"); Serial.println(status, HEX);
+  if(status & 0x80) {Serial.println("Firmware is in application mode. CCS811 is ready!");}
+  else { Serial.println("Firmware is in boot mode!");}
+  
+  if(status & 0x10) {Serial.println("Valid application firmware loaded!");}
+  else { Serial.println("No application firmware is loaded!");}
+
+  if(status & 0x08) {Serial.println("New data available!");}
+  else { Serial.println("No new data available!");}
+
+  if(status & 0x01) {Serial.println("Error detected!");
+        uint8_t error = readByte(CCS811_ADDRESS, CCS811_ERROR_ID);
+        if(error & 0x01) Serial.println("CCS811 received invalid I2C write request!");
+        if(error & 0x02) Serial.println("CCS811 received invalid I2C read request!");
+        if(error & 0x04) Serial.println("CCS811 received unsupported mode request!");
+        if(error & 0x08) Serial.println("Sensor resistance measurement at maximum range!");
+        if(error & 0x10) Serial.println("Heater current is not in range!");
+        if(error & 0x20) Serial.println("Heater voltage is not being applied correctly!");
+  }
+  else { Serial.println("No error detected!");}
+  
+  Serial.println(" ");
+  }
+
+  void CCS811init()
+  {
+    // initialize CCS811 and check version and status
+  byte HWVersion = readByte(CCS811_ADDRESS, CCS811_HW_VERSION);
+  Serial.print("CCS811 Hardware Version = 0x"); Serial.println(HWVersion, HEX); 
+
+  uint8_t FWBootVersion[2] = {0, 0}, FWAppVersion[2] = {0,0};
+  readBytes(CCS811_ADDRESS, CCS811_FW_BOOT_VERSION, 2, &FWBootVersion[0]);
+  Serial.println("CCS811 Firmware Boot Version: "); 
+  Serial.print("Major = "); Serial.println((FWBootVersion[1] & 0xF0) >> 4); 
+  Serial.print("Minor = "); Serial.println(FWBootVersion[1] & 0x04); 
+  Serial.print("Trivial = "); Serial.println(FWBootVersion[0]); 
+  
+  readBytes(CCS811_ADDRESS, CCS811_FW_APP_VERSION, 2, &FWAppVersion[0]);
+  Serial.println("CCS811 Firmware App Version: "); 
+  Serial.print("Major = "); Serial.println((FWAppVersion[1] & 0xF0) >> 4); 
+  Serial.print("Minor = "); Serial.println(FWAppVersion[1] & 0x04); 
+  Serial.print("Trivial = "); Serial.println(FWAppVersion[0]); 
+
+  // Check CCS811 status
+  checkCCS811Status();
+        uint8_t temp[1] = {0};
+        temp[0] = CCS811_APP_START;
+        Wire.transfer(CCS811_ADDRESS, &temp[0], 1, NULL, 0); 
+        delay(100);
+  checkCCS811Status();
+
+  // set CCS811 measurement mode
+  writeByte(CCS811_ADDRESS, CCS811_MEAS_MODE, AQRate << 4 | 0x08); // pulsed heating mode, enable interrupt
+  uint8_t measmode = readByte(CCS811_ADDRESS, CCS811_MEAS_MODE);
+  Serial.print("Confirm measurement mode = 0x"); Serial.println(measmode, HEX);
+  }
+  
  
 // simple function to scan for I2C devices on the bus
 void I2Cscan() 
@@ -1147,4 +1227,3 @@ void I2Cscan()
         void readBytes(uint8_t address, uint8_t subAddress, uint8_t count, uint8_t * dest) {
         Wire.transfer(address, &subAddress, 1, dest, count); 
         }
-
