@@ -309,6 +309,8 @@ const byte CCS811Enable = A2;
 const byte VbatMon = A4;
 const byte MPU6500Interrupt = 1;
 
+uint16_t eCO2 = 0, TVOC = 0;
+
 bool newMPU6500Data = false;
 bool newCCS811Data  = false;
 
@@ -526,12 +528,12 @@ void loop()
       uint8_t rawData[8] = {0, 0, 0, 0, 0, 0, 0, 0};
       readBytes(CCS811_ADDRESS, CCS811_ALG_RESULT_DATA, 8, &rawData[0]);
       
-      uint16_t eCO2 = (uint16_t) ((uint16_t) rawData[7] << 8 | rawData[6]);
+      eCO2 = (uint16_t) ((uint16_t) rawData[0] << 8 | rawData[1]);
       Serial.print("Eq CO2 in ppm = "); Serial.println(eCO2);
-      uint16_t TVOC = (uint16_t) ((uint16_t) rawData[5] << 8 | rawData[4]);
+      TVOC = (uint16_t) ((uint16_t) rawData[2] << 8 | rawData[3]);
       Serial.print("TVOC in ppb = "); Serial.println(TVOC);
-      Serial.print("Sensor current (uA) = "); Serial.println( (rawData[1] & 0xFC)>> 2);
-      Serial.print("Sensor voltage (V) = "); Serial.println( (float) (((uint16_t)(rawData[1] & 0x02) << 8) | rawData[0]) * ( 1.65/1023.0));
+      Serial.print("Sensor current (uA) = "); Serial.println( (rawData[6] & 0xFC) >> 2);
+      Serial.print("Sensor voltage (V) = "); Serial.println( (float) ((uint16_t) ((((uint16_t)rawData[6] & 0x02) << 8) | rawData[7])) * (1.65f/1023.0f), 3);   
       }
       
       digitalWrite(CCS811Enable, HIGH); // set LOW to enable the CCS811 air quality sensor
