@@ -1,6 +1,6 @@
 /* Sensor Tile Basic Example Code using Ladybug
  by: Kris Winer
- date: February 12, 2017
+ date: December 3, 2016
  license: Beerware - Use this code however you'd like. If you 
  find it useful you can buy me a beer some time.
  
@@ -17,6 +17,7 @@
   */
 #include "Wire.h"   
 #include <RTC.h>
+#include <avr/dtostrf.h>
 
 // Must immediately declare functions to avoid "Not declared in this scope" errors
 void      I2Cscan();
@@ -301,35 +302,60 @@ const byte month = 1;
 const byte year = 17;
 
 uint8_t Seconds, Minutes, Hours, Day, Month, Year;
-
-float VDDA, VBAT;
-
-const byte CCS811Interrupt = A1;
-const byte CCS811Enable = A2;
-const byte VbatMon = A4;
-const byte MPU6500Interrupt = 1;
-
 uint16_t eCO2 = 0, TVOC = 0;
+uint8_t Current = 0;
+float Voltage = 0.0f;
+float VDDA, VBAT;
+uint8_t rawData[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+char Packet[4], StringVBAT[3], StringP[7], StringH[5], StringT[4];
+
+// Sensor Tile
+const byte CCS811Interrupt = A1;
+const byte CCS811Enable    = A2;
+// Breath Analyzer
+//const byte CCS811Interrupt = 4;
+//const byte CCS811Enable = 3;
+
+const byte VbatMon = A4;
+const byte MPU6500Interrupt = 1; // Sensor Tile
+//const byte MPU6500Interrupt = 10; // Ladybug v.02
+
+//Sensor Tile
+#define ATMD        A3 // toggle pin for AT mode or UART pass through mode
+#define BMD350Reset  0 // BMD-350 reset pin active LOW
 
 bool newMPU6500Data = false;
 bool newCCS811Data  = false;
 
 void setup()
 {
-  Serial.begin(115200);
+  Serial.begin(57600);
   delay(4000);
+  Serial.println("Serial enabled!");
+
+  Serial2.begin(57600);
+  delay(4000);
+  Serial.println("Serial2 enabled!");
 
   pinMode(myLed, OUTPUT);
   digitalWrite(myLed, HIGH); // start with led on
 
+  // Voltage divider 27K/100K to monitor LiPo battery voltage
   pinMode(VbatMon, INPUT);
   analogReadResolution(12); // take advantage of 12-bit ADCs
 
+  // Configure interrupts
   pinMode(MPU6500Interrupt, INPUT);
   pinMode(CCS811Interrupt, INPUT_PULLUP); // active LOW
 
+  // Configure CCS811 enable
   pinMode(CCS811Enable, OUTPUT);
   digitalWrite(CCS811Enable, LOW); // set LOW to enable the CCS811 air quality sensor
+
+  // Configure BMD-350 mode pins
+  pinMode(ATMD, OUTPUT);
+  pinMode(BMD350Reset, OUTPUT);  
  
   Wire.begin(); // set master mode 
   Wire.setClock(400000); // I2C frequency at 400 kHz  
@@ -351,6 +377,11 @@ void setup()
   RTC.setMonth(month);
   RTC.setYear(year);
 
+  // Initialize BMD-350
+  Serial.println("Initializing BMD-350!");
+  delay(1000);
+  initializeBMD350();
+
    // Read the WHO_AM_I register of the MPU6500, this is a good test of communication
   byte c = readByte(MPU6500_ADDRESS, WHO_AM_I_MPU6500);  // Read WHO_AM_I register for MPU-9250
   Serial.print("MPU6500 "); Serial.print("I AM "); Serial.print(c, HEX); Serial.print(" I should be "); Serial.println(0x70, HEX);
@@ -361,13 +392,12 @@ void setup()
   Serial.print("BME280 "); Serial.print("I AM "); Serial.print(f, HEX); Serial.print(" I should be ");Serial.println(0x60, HEX);
   delay(1000); 
 
-  digitalWrite(CCS811Enable, LOW); // set LOW to enable the CCS811 air quality sensor
-
   // Read the WHO_AM_I register of the CCS811 this is a good test of communication
+  digitalWrite(CCS811Enable, LOW); // set LOW to enable the CCS811 air quality sensor
   byte g = readByte(CCS811_ADDRESS, CCS811_ID);  // Read WHO_AM_I register for CCS8110
+  digitalWrite(CCS811Enable, HIGH); // set HIGH to disable the CCS811 air quality sensor
   Serial.print("CCS811 "); Serial.print("I AM "); Serial.print(g, HEX); Serial.print(" I should be "); Serial.println(0x81, HEX);
   Serial.println(" ");
-  digitalWrite(CCS811Enable, HIGH); // set LOW to enable the CCS811 air quality sensor
   delay(1000); 
   
   if(c == 0x70 && f == 0x60 && g == 0x81) {
@@ -401,19 +431,18 @@ void setup()
 
     BME280Init(); // Initialize BME280 altimeter
 
-
-
     // initialize CCS811 and check version and status
     digitalWrite(CCS811Enable, LOW); // set LOW to enable the CCS811 air quality sensor
-    delay(1);
     CCS811init();
-    digitalWrite(CCS811Enable, HIGH); // set LOW to enable the CCS811 air quality sensor
+    digitalWrite(CCS811Enable, HIGH); // set HIGH to disable the CCS811 air quality sensor
 
     attachInterrupt(MPU6500Interrupt, myinthandler1, RISING); // enable MPU6500 interrupt
     attachInterrupt(CCS811Interrupt,  myinthandler2, FALLING); // enable CCS811 interrupt
-  
- }
-    else Serial.println(" BME280 not functioning!");
+    }
+    else 
+    if(c != 0x70) Serial.println(" MPU6500 not functioning!");
+    if(f != 0x60) Serial.println(" BME280 not functioning!");    
+    if(g != 0x81) Serial.println(" CCS811 not functioning!");
 }
 
 void loop()
@@ -435,7 +464,7 @@ void loop()
      gy = (float)MPU6500Data[5]*gRes;  
      gz = (float)MPU6500Data[6]*gRes; 
 
-     temperature = ((float) MPU6500Data[3]) / 333.87 + 21.0; // Gyro chip temperature in degrees Centigrade
+     temperature = ((float) MPU6500Data[3]) / 333.87f + 21.0f; // Gyro chip temperature in degrees Centigrade
      } 
      
     Serial.println("MPU6500:");
@@ -480,10 +509,7 @@ void loop()
       Serial.println(" ");
 
       // CCS811 data 
-      digitalWrite(CCS811Enable, LOW); // set LOW to enable the CCS811 air quality sensor
-      delay(1);
       Serial.println("CCS811:");
-
 
       // Update CCS811 humidity and temperature compensation
       uint8_t temp[5] = {0, 0, 0, 0, 0};
@@ -502,16 +528,17 @@ void loop()
       {
        temp[3] |= 1;
       }
-      
-      Wire.transfer(CCS811_ADDRESS, &temp[0], 5, NULL, 0);
 
+      digitalWrite(CCS811Enable, LOW); // set LOW to enable the CCS811 air quality sensor    
+      Wire.transfer(CCS811_ADDRESS, &temp[0], 5, NULL, 0);
+      digitalWrite(CCS811Enable, HIGH); // set HIGH to disable the CCS811 air quality sensor
             
-     // If intPin goes LOW, all data registers have new data
-     if(newCCS811Data == true) {  // On interrupt, read data
+      // If intPin goes LOW, all data registers have new data
+      if(newCCS811Data == true) {  // On interrupt, read data
       newCCS811Data = false;  // reset newData flag
      
-     uint8_t status = readByte(CCS811_ADDRESS, CCS811_STATUS);
-      Serial.print("status = 0x"); Serial.println(status, HEX);
+      digitalWrite(CCS811Enable, LOW); // set LOW to enable the CCS811 air quality sensor
+      uint8_t status = readByte(CCS811_ADDRESS, CCS811_STATUS);
       
       if(status & 0x01) { // check for errors
         uint8_t error = readByte(CCS811_ADDRESS, CCS811_ERROR_ID);
@@ -522,32 +549,20 @@ void loop()
         if(error & 0x10) Serial.println("Heater current is not in range!");
         if(error & 0x20) Serial.println("Heater voltage is not being applied correctly!");
       }
-      
- //     if(status & 0x08) { // poll for data ready
 
-      uint8_t rawData[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-      readBytes(CCS811_ADDRESS, CCS811_ALG_RESULT_DATA, 8, &rawData[0]);
-      
+     readBytes(CCS811_ADDRESS, CCS811_ALG_RESULT_DATA, 8, &rawData[0]);
+          
       eCO2 = (uint16_t) ((uint16_t) rawData[0] << 8 | rawData[1]);
-      Serial.print("Eq CO2 in ppm = "); Serial.println(eCO2);
       TVOC = (uint16_t) ((uint16_t) rawData[2] << 8 | rawData[3]);
-      Serial.print("TVOC in ppb = "); Serial.println(TVOC);
-      Serial.print("Sensor current (uA) = "); Serial.println( (rawData[6] & 0xFC) >> 2);
-      Serial.print("Sensor voltage (V) = "); Serial.println( (float) ((uint16_t) ((((uint16_t)rawData[6] & 0x02) << 8) | rawData[7])) * (1.65f/1023.0f), 3);   
-      }
-      
+      Current = (rawData[6] & 0xFC) >> 2;
+      Voltage = (float) ((uint16_t) ((((uint16_t)rawData[6] & 0x02) << 8) | rawData[7])) * (1.65f/1023.0f), 3;  
+     } 
+     
       digitalWrite(CCS811Enable, HIGH); // set LOW to enable the CCS811 air quality sensor
-      Serial.println(" ");
-      
-      // STM32L4 data 
-      VDDA = STM32.getVREF();
-      Temperature = STM32.getTemperature();
-      VBAT = (127.0f/100.0f) * 3.30f * ((float)analogRead(VbatMon))/4095.0f;
-  
-      Serial.println("STM32L4:");
-      Serial.print("VDDA = "); Serial.println(VDDA, 2); 
-      Serial.print("STM32L4 MCU Temperature = "); Serial.println(Temperature, 2);
-      Serial.print("VBAT = "); Serial.println(VBAT, 2); 
+      Serial.print("Eq CO2 in ppm = "); Serial.println(eCO2);
+      Serial.print("TVOC in ppb = "); Serial.println(TVOC);
+      Serial.print("Sensor current (uA) = "); Serial.println(Current);
+      Serial.print("Sensor voltage (V) = "); Serial.println(Voltage, 2);  
       Serial.println(" ");
       
       // Read RTC
@@ -566,11 +581,20 @@ void loop()
 
       Serial.print(Month); Serial.print("/"); Serial.print(Day); Serial.print("/"); Serial.println(Year);
       Serial.println(" ");
-      
-      digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
-      delay(1000); 
 
-//      STM32.stop(5000);    // time out in stop mode to save power
+      // Send some data to the BMD-350
+      digitalWrite(myLed, HIGH);   // set the LED on
+      dtostrf(VBAT, 4, 2, StringVBAT);
+      dtostrf(pressure, 4, 2, StringP);
+      dtostrf(humidity, 4, 2, StringH);
+      sprintf(Packet, "%s,%s,%s", StringVBAT, StringP, StringH);
+      Serial2.write(Packet);
+      delay(100);
+      digitalWrite(myLed, LOW);   // set the LED off
+
+      delay(900);
+      
+ //     STM32.sleep();    // time out in stop mode to save power
 }
 
 //===================================================================================================================
@@ -1167,7 +1191,139 @@ void checkCCS811Status()
   uint8_t measmode = readByte(CCS811_ADDRESS, CCS811_MEAS_MODE);
   Serial.print("Confirm measurement mode = 0x"); Serial.println(measmode, HEX);
   }
+
+  void  initializeBMD350()
+  {
+  /*Put BMD-350 in AT mode*/
+  digitalWrite(ATMD, LOW); // set ATMD pin for AT mode
+  Serial.println("ATMD pin set LOW!");
+  delay(100);
+  digitalWrite(BMD350Reset, LOW); // reset BMD-350
+  Serial.println("Reset pin set LOW!");
+  delay(100); // wait a while
+  digitalWrite(BMD350Reset, HIGH); // restart BMD-350 
+  Serial.println("Reset pin set HIGH!");
+  delay(3000); // hold ATMD pin LOW for at least 2.5 seconds
+
+  /* Get some basic info about the module using AT commands */
+  Serial2.write("at\r");
+  while(!Serial2.available() ) { delay(100); }
+  Serial.print("AT working? "); 
+  while ( Serial2.available() ) { Serial.write(Serial2.read() ); }
+  Serial.println(" ");
+  digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
   
+  Serial2.write("at$ver?\r");
+  while(!Serial2.available() ) { delay(100); }
+  Serial.print("BMDware version? "); 
+  while ( Serial2.available() ) { Serial.write(Serial2.read() ); }
+  Serial.println(" ");
+  digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
+   
+  Serial2.write("at$blver?\r");
+  while(!Serial2.available() ) { delay(100); }
+  Serial.print("Bootloader version? "); 
+  while ( Serial2.available() ) { Serial.write(Serial2.read() ); }
+  Serial.println(" ");
+  digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
+   
+  Serial2.write("at$pver?\r");
+  while(!Serial2.available() ) { delay(100); }
+  Serial.print("Protocol version? "); 
+  while ( Serial2.available() ) { Serial.write(Serial2.read() ); }
+  Serial.println(" ");
+  digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
+  
+  Serial2.write("at$hwinfo?\r");
+  while(!Serial2.available() ) { delay(100); }
+  Serial.print("Hardware info: "); 
+  while ( Serial2.available() ) { Serial.write(Serial2.read() ); }
+  Serial.println(" ");
+  digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
+ 
+  /* Configure UART pass through mode*/
+  //Set Baud rate
+  Serial2.write("at$ubr 57600\r"); // decimal values 38400, 57600, etc
+  while(!Serial2.available() ) { delay(100); }
+  Serial.print("Set new Baud rate? "); 
+  while ( Serial2.available() ) { Serial.write(Serial2.read() ); }
+  Serial.println(" ");
+  digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
+   
+  delay(100);
+  
+  // Query Baud rate
+  Serial2.write("at$ubr?\r");
+  while(!Serial2.available() ) { delay(100); }
+  Serial.print("New Baud rate? "); 
+  while ( Serial2.available() ) { Serial.write(Serial2.read() ); }
+  Serial.println(" ");
+  digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
+ 
+  //Configure Flow Control
+  Serial2.write("at$ufc 00\r"); // 0x00 to disable, 0x01 to enable
+  while(!Serial2.available() ) { delay(100); }
+  Serial.print("Configured flow control? "); 
+  while ( Serial2.available() ) { Serial.write(Serial2.read() ); }
+  Serial.println(" ");
+  digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
+ 
+  delay(100);
+  
+  // Query Flow control
+  Serial2.write("at$ufc?\r");
+  while(!Serial2.available() ) { delay(100); }
+  Serial.print("Flow control enabled? "); 
+  while ( Serial2.available() ) { Serial.write(Serial2.read() ); }
+  Serial.println(" ");
+  digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
+ 
+  //Configure Parity
+  Serial2.write("at$upar 00\r"); // 0x00 to disable, 0x01 to enable
+  while(!Serial2.available() ) { delay(100); }
+  Serial.print("Configured parity? "); 
+  while ( Serial2.available() ) { Serial.write(Serial2.read() ); }
+  Serial.println(" ");
+  digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
+ 
+  delay(100);
+  
+  // Query Flow control
+  Serial2.write("at$upar?\r");
+  while(!Serial2.available() ) { delay(100); }
+  Serial.print("Parity enabled? "); 
+  while ( Serial2.available() ) { Serial.write(Serial2.read() ); }
+  Serial.println(" ");
+  digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
+ 
+  //Enable UART pass through mode
+  Serial2.write("at$uen 01\r"); // 0x00 to disable, 0x01 to enable
+  while(!Serial2.available() ) { delay(100); }
+  Serial.print("Set UART pass through mode ? "); 
+  while ( Serial2.available() ) { Serial.write(Serial2.read() ); }
+  Serial.println(" ");
+  digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
+
+  delay(100);
+   
+  // Query UART pass through mode
+  Serial2.write("at$uen?\r");
+  while(!Serial2.available() ) { delay(100); }
+  Serial.print("UART pass through mode enabled? "); 
+  while ( Serial2.available() ) { Serial.write(Serial2.read() ); }
+  Serial.println(" ");
+  digitalWrite(myLed, HIGH); delay(100); digitalWrite(myLed, LOW);
+
+  /*Put BMD-350 in UART pass through mode*/
+  digitalWrite(ATMD, HIGH); // set ATMD pin for UART pass through (normal) mode
+  Serial.println("ATMD pin set HIGH!");
+  delay(100);
+  digitalWrite(BMD350Reset, LOW); // reset BMD-350
+  Serial.println("Reset pin set LOW!");
+  delay(100); // wait a while
+  digitalWrite(BMD350Reset, HIGH); // restart BMD-350 
+  Serial.println("Reset pin set HIGH!");
+  }
  
 // simple function to scan for I2C devices on the bus
 void I2Cscan() 
@@ -1229,3 +1385,4 @@ void I2Cscan()
         void readBytes(uint8_t address, uint8_t subAddress, uint8_t count, uint8_t * dest) {
         Wire.transfer(address, &subAddress, 1, dest, count); 
         }
+
