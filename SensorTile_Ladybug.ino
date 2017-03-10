@@ -1,12 +1,26 @@
 /* Sensor Tile Basic Example Code using Ladybug
  by: Kris Winer
- date: December 3, 2016
+ date: March 9, 2017
  license: Beerware - Use this code however you'd like. If you 
  find it useful you can buy me a beer some time.
  
  The BME280 is a simple but high resolution pressure/humidity/temperature sensor, which can be used in its high resolution
  mode but with power consumption of 20 microAmp, or in a lower resolution mode with power consumption of
  only 1 microAmp. The choice will depend on the application.
+ 
+ MPU6500 accel/gyro is the main component of the MPU9250 9 DoF motion sensor and offers a superb accelerometer and gyro, 
+ almost as good as the MAX21000. Here it is used for low frequency vibration detection.
+ 
+ The CCS811 is an air quality sensor returning equivalent CO2 concentration in ppm and volatile organic compond concentration on ppb.
+ The temperature and humidyt data from the BME280 are used in the air quality determination. The sensor is surprisingly
+ sensitive to my breath when I am typing over it.
+ 
+ The BMD-350 BLE module by Rigado uses the nRF52 as a simple UART bridge to allow data packets to be streamed to a console
+ app on the iPhone. This is barely adequate as a dta logging method.
+ 
+ The sensor tile (https://hackaday.io/project/19649-stm32l4-sensor-tile) uses the STM32L432 MCU which is also found on the 
+ Ladybug developent board (https://www.tindie.com/products/TleraCorp/ladybug-stm32l432-development-board/?pt=ac_prod_search).
+ Both are programmed using the Arduino IDE.
  
  SDA and SCL should have 4K7 pull-up resistors (to 3.3V).
  
@@ -19,19 +33,7 @@
 #include <RTC.h>
 #include <avr/dtostrf.h>
 
-// Must immediately declare functions to avoid "Not declared in this scope" errors
-void      I2Cscan();
-void      writeByte(uint8_t address, uint8_t subAddress, uint8_t data);
-uint8_t   readByte(uint8_t address, uint8_t subAddress);
-void      readBytes(uint8_t address, uint8_t subAddress, uint8_t count, uint8_t * dest);
-uint32_t  readBME280Temperature();
-uint32_t  readBME280Pressure();
-uint16_t  readBME280Humidity();
-void      BME280Init();
-uint32_t  BME280_compensate_P(int32_t adc_P);
-int32_t   BME280_compensate_T(int32_t adc_T);
-uint32_t  BME280_compensate_H(int32_t adc_H);
-
+// https://www.bosch-sensortec.com/bst/products/all_products/bme280
 // BME280 registers
 #define BME280_HUM_LSB    0xFE
 #define BME280_HUM_MSB    0xFD
@@ -50,6 +52,7 @@ uint32_t  BME280_compensate_H(int32_t adc_H);
 #define BME280_CALIB00    0x88
 #define BME280_CALIB26    0xE1
 
+// http://ams.com/eng/Products/Environmental-Sensors/Gas-Sensors/CCS811
 // CCS811 Registers
 #define CCS811_STATUS             0x00
 #define CCS811_MEAS_MODE          0x01
@@ -68,9 +71,8 @@ uint32_t  BME280_compensate_H(int32_t adc_H);
 #define CCS811_APP_START          0xF4
 #define CCS811_SW_RESET           0xFF
 
-// See also MPU-9250 Register Map and Descriptions, Revision 4.0, RM-MPU-9250A-00, Rev. 1.4, 9/9/2013 for registers not listed in 
-// above document; the MPU6500 and MPU9250 are virtually identical but the latter has a different register map
-//
+// https://www.invensense.com/products/motion-tracking/6-axis/mpu-6500/
+// MPU6500
 #define SELF_TEST_X_GYRO  0x00                  
 #define SELF_TEST_Y_GYRO  0x01                                                                          
 #define SELF_TEST_Z_GYRO  0x02
@@ -550,7 +552,7 @@ void loop()
         if(error & 0x20) Serial.println("Heater voltage is not being applied correctly!");
       }
 
-     readBytes(CCS811_ADDRESS, CCS811_ALG_RESULT_DATA, 8, &rawData[0]);
+      readBytes(CCS811_ADDRESS, CCS811_ALG_RESULT_DATA, 8, &rawData[0]);
           
       eCO2 = (uint16_t) ((uint16_t) rawData[0] << 8 | rawData[1]);
       TVOC = (uint16_t) ((uint16_t) rawData[2] << 8 | rawData[3]);
