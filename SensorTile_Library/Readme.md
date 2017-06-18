@@ -3,3 +3,5 @@ Library for the new and improved STM32L432-based Sensor Tile, with BME280 pressu
 Also on the board are the ICS43434 I2S digital microphone, a 1 MByte SPI NOR flash memory, and the BMD-350 (nRF52) BLE module for wireless connectivity.
 
 The 20 mm x 20 mm sensor tile also has a variety of indicator leds, a user/boot button, and a MAX1555 LiPo battery charger.
+
+![SensorTile.v01a](https://user-images.githubusercontent.com/6698410/27265138-e64e11ba-5444-11e7-8ddc-caf0cc17e75c.jpg)
