@@ -5,7 +5,7 @@
  This sketch is to operate the Sensor Tile (https://hackaday.io/project/19649-stm32l4-sensor-tile) 
  with BME280 pressure/temperature/humidity sensor, CCS811 eCO2 and VOC sensor, BMA280 accelerometer, 
  and ICS43434 I2S microphone all hosted by an STM32L432 MCU. There is also a BMD-350 (nRF52) module 
- for BLE connectivity as a UART bridge (slave) to the STM32L432 and a 1 MByte SPI flash fr data 
+ for BLE connectivity as a UART bridge (slave) to the STM32L432 and a 1 MByte SPI flash for data 
  logging and storage.
  
  The sketch uses default SDA/SCL pins on the Ladybug development board.
@@ -19,6 +19,7 @@
 #include "BMA280.h"
 #include "BME280.h"
 #include "CCS811.h"
+#include "SPIFlash.h"
 
 #define SerialDebug true  // set to true to get Serial output for debugging
 #define myLed 13
@@ -35,13 +36,10 @@
  */
 uint8_t Posr = P_OSR_16, Hosr = H_OSR_16, Tosr = T_OSR_02, Mode = normal, IIRFilter = BW0_021ODR, SBy = t_62_5ms;     // set pressure amd temperature output data rate
 
-float Temperature, Pressure, Humidity; // stores BME280 pressures sensor pressure and temperature
-uint32_t rawPress, rawTemp, compHumidity, compTemp;   // pressure and temperature raw count output for BME280
+uint32_t rawPress, rawTemp, compHumidity, compTemp, compPress;   // pressure, humidity, and temperature raw count output for BME280
 uint16_t rawHumidity;  // variables to hold raw BME280 humidity value
 
 float temperature_C, temperature_F, pressure, humidity, altitude; // Scaled output of the BME280
-
-uint32_t delt_t = 0, count = 0, sumCount = 0, slpcnt = 0;  // used to control display output rate
 
 // RTC set up
 /* Change these values to set the current initial time */
@@ -59,8 +57,9 @@ uint8_t Seconds, Minutes, Hours, Day, Month, Year;
 bool alarmFlag = false;
 
 // battery voltage monitor definitions
+uint16_t rawVbat;
 float VDDA, VBAT;
-const byte VbatMon = A4;
+#define VbatMon A4
 
 BME280 BME280; // instantiate BME280 class
 
@@ -96,7 +95,7 @@ BMA280 BMA280(BMA280_intPin1, BMA280_intPin2); // instantiate BMA280 class
  *  Choices are   dt_idle , dt_1sec, dt_10sec, dt_60sec
  */
 uint8_t AQRate = dt_10sec;  // set the sample rate
-uint8_t rawData[8] = {0, 0, 0, 0, 0, 0, 0, 0};  // array to hold the raw data
+uint8_t rawData[8] = {0, 0, 0, 0, 0, 0, 0, 0};  // array to hold the CCS811 raw data
 uint16_t eCO2 = 0, TVOC = 0;
 uint8_t Current = 0;
 float Voltage = 0.0f;
@@ -105,12 +104,21 @@ bool newCCS811Data  = false; // boolean flag for interrupt
 
 CCS811 CCS811(CCS811_intPin, CCS811_wakePin); // instantiate CCS811 class
 
+// 8 MBit (1 MByte) SPI Flash 4096, 256-byte pages
+#define csPin 10 // SPI Flash chip select pin
+
+uint16_t page_number = 0;     // set the page mumber for flash page write
+uint8_t  sector_number = 0;   // set the sector number for sector write
+uint8_t  flashPage[256];      // array to hold the data for flash page write
+
+SPIFlash SPIFlash(csPin);
+
 // BMD-350 UART bridge
 //Sensor Tile
 #define ATMD        A3 // toggle pin for AT mode or UART pass through mode
 #define BMD350Reset  0 // BMD-350 reset pin active LOW
 
-char Packet[3], StringVBAT[4], StringP[5], StringH[4], StringT[4];
+char Packet[20], StringVBAT[20], StringP[20], StringH[20], StringT[20];
 
 
 void setup()
@@ -205,6 +213,11 @@ void setup()
     CCS811.CCS811init(AQRate);
     digitalWrite(CCS811_wakePin, HIGH); // set HIGH to disable the CCS811 air quality sensor
 
+    // check SPI Flash ID
+    SPIFlash.SPIFlashinit();
+    SPIFlash.getChipID();
+    SPIFlash.flash_chip_erase(true); // full erase
+
     // set alarm to update the RTC every second
     RTC.enableAlarm(RTC.MATCH_ANY); // alarm once a second
   
@@ -266,7 +279,7 @@ void loop()
 
     // CCS811 data
     digitalWrite(CCS811_wakePin, LOW); // set LOW to enable the CCS811 air quality sensor
-//    CCS811.compensateCCS811(compHumidity, compTemp); // compensate CCS811 using BME280 humidity and temperature
+    CCS811.compensateCCS811(compHumidity, compTemp); // compensate CCS811 using BME280 humidity and temperature
     digitalWrite(CCS811_wakePin, HIGH); // set LOW to enable the CCS811 air quality sensor
 
     // If intPin goes LOW, all data registers have new data
@@ -288,12 +301,14 @@ void loop()
     if(alarmFlag) { // update RTC output (serial display) whenever the RTC alarm condition is achieved
        alarmFlag = false;
    
+    if(SerialDebug) {
     Serial.print("ax = ");  Serial.print((int)1000*ax);  
     Serial.print(" ay = "); Serial.print((int)1000*ay); 
     Serial.print(" az = "); Serial.print((int)1000*az); Serial.println(" mg");
+    }
 
-    tempCount = BMA280.readBMA280GyroTempData();  // Read the gyro adc values
-    temperature = 0.5f * ((float) tempCount) + 23.0f; // Gyro chip temperature in degrees Centigrade
+    tempCount = BMA280.readBMA280TempData();  // Read the accel chip temperature adc values
+    temperature = 0.5f * ((float) tempCount) + 23.0f; // Accel chip temperature in degrees Centigrade
     // Print temperature in degrees Centigrade      
     Serial.print("Gyro temperature is ");  Serial.print(temperature, 1);  Serial.println(" degrees C"); // Print T values to tenths of s degree C        
 
@@ -303,13 +318,15 @@ void loop()
     temperature_F = 9.0f*temperature_C/5.0f + 32.0f;
      
     rawPress =  BME280.readBME280Pressure();
-    pressure = (float) BME280.BME280_compensate_P(rawPress)/25600.f; // Pressure in mbar
+    compPress = BME280.BME280_compensate_P(rawPress);
+    pressure = (float) compPress/25600.f; // Pressure in mbar
     altitude = 145366.45f*(1.0f - powf((pressure/1013.25f), 0.190284f));   
    
     rawHumidity =  BME280.readBME280Humidity();
     compHumidity = BME280.BME280_compensate_H(rawHumidity);
     humidity = (float)compHumidity/1024.0f; // Humidity in %RH
  
+    if(SerialDebug){
     Serial.println("BME280:");
     Serial.print("Altimeter temperature = "); 
     Serial.print( temperature_C, 2); 
@@ -334,6 +351,7 @@ void loop()
     Serial.print("Sensor current (uA) = "); Serial.println(Current);
     Serial.print("Sensor voltage (V) = "); Serial.println(Voltage, 2);  
     Serial.println(" ");
+    }
 
     // Read RTC
     Serial.println("RTC:");
@@ -352,22 +370,70 @@ void loop()
     Serial.print(Month); Serial.print("/"); Serial.print(Day); Serial.print("/"); Serial.println(Year);
     Serial.println(" ");
 
-    VBAT = (127.0f/100.0f) * 3.30f * ((float)analogRead(VbatMon))/4095.0f;
+    rawVbat = analogRead(VbatMon);
+    VBAT = (127.0f/100.0f) * 3.30f * ((float)rawVbat)/4095.0f;
     Serial.print("VBAT = "); Serial.println(VBAT, 2); 
       
     // Send some data to the BMD-350
     digitalWrite(myLed, HIGH);   // set the LED on
-/*    dtostrf(VBAT, 4, 2, StringVBAT);
+    dtostrf(VBAT, 4, 2, StringVBAT);
     dtostrf(pressure, 5, 1, StringP);
-    dtostrf(humidity, 4, 2, StringH);
+    dtostrf(humidity, 4, 1, StringH);
     sprintf(Packet, "%s,%s,%s", StringVBAT, StringP, StringH);
     Serial2.write(Packet);
-    */
-    delay(10);
-    digitalWrite(myLed, LOW);   // set the LED off
+
+
+    // store some data to the SPI flash
+    if(sector_number < 8 && page_number < 0x0EFF) {
+      flashPage[sector_number*32 + 0]  = tempCount;                     // Accel chip temperature
+      flashPage[sector_number*32 + 1]  = accelCount[0] & 0xFF00 >> 8;   // MSB x-axis accel
+      flashPage[sector_number*32 + 2]  = accelCount[0] & 0x00FF;        // LSB x-axis accel
+      flashPage[sector_number*32 + 3]  = accelCount[1] & 0xFF00 >> 8;   // MSB y-axis accel
+      flashPage[sector_number*32 + 4]  = accelCount[1] & 0x00FF;        // LSB y-axis accel
+      flashPage[sector_number*32 + 5]  = accelCount[2] & 0xFF00 >> 8;   // MSB z-axis accel
+      flashPage[sector_number*32 + 6]  = accelCount[2] & 0x00FF;        // LSB z-axis accel
+      flashPage[sector_number*32 + 7]  = rawData[0];                    // eCO2 MSB
+      flashPage[sector_number*32 + 8]  = rawData[1];                    // eCO2 LSB
+      flashPage[sector_number*32 + 9]  = rawData[2];                    // TVOC MSB
+      flashPage[sector_number*32 + 10] = rawData[3];                    // TVOC LSB
+      flashPage[sector_number*32 + 11] = (compTemp & 0xFF000000) >> 24;
+      flashPage[sector_number*32 + 12] = (compTemp & 0x00FF0000) >> 16;
+      flashPage[sector_number*32 + 13] = (compTemp & 0x0000FF00) >> 8;
+      flashPage[sector_number*32 + 14] = (compTemp & 0x000000FF);
+      flashPage[sector_number*32 + 15] = (compHumidity & 0xFF000000) >> 24;
+      flashPage[sector_number*32 + 16] = (compHumidity & 0x00FF0000) >> 16;
+      flashPage[sector_number*32 + 17] = (compHumidity & 0x0000FF00) >> 8;
+      flashPage[sector_number*32 + 18] = (compHumidity & 0x000000FF);
+      flashPage[sector_number*32 + 19] = ((compPress & 0xFF000000) >> 24);
+      flashPage[sector_number*32 + 20] = ((compPress & 0x00FF0000) >> 16);
+      flashPage[sector_number*32 + 21] = ((compPress & 0x0000FF00) >> 8);
+      flashPage[sector_number*32 + 22] = ((compPress & 0x000000FF));
+      flashPage[sector_number*32 + 23] = Seconds;
+      flashPage[sector_number*32 + 24] = Minutes;
+      flashPage[sector_number*32 + 25] = Hours;
+      flashPage[sector_number*32 + 26] = Day;
+      flashPage[sector_number*32 + 27] = Month;
+      flashPage[sector_number*32 + 28] = Year;
+      flashPage[sector_number*32 + 29] = (rawVbat & 0xFF00) >> 8;
+      flashPage[sector_number*32 + 30] =  rawVbat & 0x00FF;
+      sector_number++;
+    }
+    else if(sector_number == 8 && page_number < 0x0EFF)
+    {
+      SPIFlash.flash_page_program(flashPage, page_number);
+      Serial.print("Wrote flash page: "); Serial.println(page_number);
+      sector_number = 0;
+      page_number++;
     }  
+    else
+    {
+      Serial.println("Reached last page of SPI flash!"); Serial.println("Data logging stopped!");
+    }
+
+    digitalWrite(myLed, LOW);   // set the LED off
+    }
       
- //     STM32.stop();    // time out in stop mode to save power, wake on alarm or sensor interrupt
+      STM32.sleep();    // time out in stop mode to save power, wake on alarm or sensor interrupt
  
 }
 
