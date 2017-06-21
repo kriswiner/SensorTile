@@ -44,12 +44,12 @@ float temperature_C, temperature_F, pressure, humidity, altitude; // Scaled outp
 // RTC set up
 /* Change these values to set the current initial time */
 const byte seconds = 0;
-const byte minutes = 16;
-const uint8_t hours = 9;
+const byte minutes = 9;
+const uint8_t hours = 17;
 
 /* Change these values to set the current initial date */
-const byte day = 10;
-const byte month = 1;
+const byte day = 19;
+const byte month = 6;
 const byte year = 17;
 
 uint8_t Seconds, Minutes, Hours, Day, Month, Year;
@@ -118,7 +118,7 @@ SPIFlash SPIFlash(csPin);
 #define ATMD        A3 // toggle pin for AT mode or UART pass through mode
 #define BMD350Reset  0 // BMD-350 reset pin active LOW
 
-char Packet[20], StringVBAT[20], StringP[20], StringH[20], StringT[20];
+char Packet[20], StringVBAT[20], StringP[20], StringH[20], StringTempC[20], StringeCO2[20], StringTVOC[20];
 
 
 void setup()
@@ -219,9 +219,9 @@ void setup()
     SPIFlash.flash_chip_erase(true); // full erase
 
     // set alarm to update the RTC every second
-    RTC.enableAlarm(RTC.MATCH_ANY); // alarm once a second
+//    RTC.enableAlarm(RTC.MATCH_ANY); // alarm once a second
   
-    RTC.attachInterrupt(alarmMatch);
+ //   RTC.attachInterrupt(alarmMatch);
 
     attachInterrupt(BMA280_intPin1, myinthandler1, RISING);  // define interrupt for INT1 pin output of BMA280
     attachInterrupt(BMA280_intPin2, myinthandler2, RISING);  // define interrupt for INT2 pin output of BMA280
@@ -293,13 +293,13 @@ void loop()
     TVOC = (uint16_t) ((uint16_t) rawData[2] << 8 | rawData[3]);
     Current = (rawData[6] & 0xFC) >> 2;
     Voltage = (float) ((uint16_t) ((((uint16_t)rawData[6] & 0x02) << 8) | rawData[7])) * (1.65f/1023.0f), 3; 
-    }           
+ //   }           
     digitalWrite(CCS811_wakePin, HIGH); // set LOW to enable the CCS811 air quality sensor 
 
     
     
-    if(alarmFlag) { // update RTC output (serial display) whenever the RTC alarm condition is achieved
-       alarmFlag = false;
+//    if(alarmFlag) { // update RTC output (serial display) whenever the RTC alarm condition is achieved
+//       alarmFlag = false;
    
     if(SerialDebug) {
     Serial.print("ax = ");  Serial.print((int)1000*ax);  
@@ -375,22 +375,26 @@ void loop()
     Serial.print("VBAT = "); Serial.println(VBAT, 2); 
       
     // Send some data to the BMD-350
-    digitalWrite(myLed, HIGH);   // set the LED on
-    dtostrf(VBAT, 4, 2, StringVBAT);
+    dtostrf(temperature_C, 4, 1, StringTempC);
     dtostrf(pressure, 5, 1, StringP);
     dtostrf(humidity, 4, 1, StringH);
-    sprintf(Packet, "%s,%s,%s", StringVBAT, StringP, StringH);
+    sprintf(Packet, "%s %s %s ", StringTempC, StringP, StringH);
     Serial2.write(Packet);
 
+    dtostrf(eCO2, 4, 2, StringeCO2);
+    dtostrf(TVOC, 5, 1, StringTVOC);
+    dtostrf(VBAT, 4, 2, StringVBAT);
+    sprintf(Packet, "%s %s %s\n", StringeCO2, StringTVOC, StringVBAT);
+    Serial2.write(Packet);
 
     // store some data to the SPI flash
     if(sector_number < 8 && page_number < 0x0EFF) {
       flashPage[sector_number*32 + 0]  = tempCount;                     // Accel chip temperature
-      flashPage[sector_number*32 + 1]  = accelCount[0] & 0xFF00 >> 8;   // MSB x-axis accel
+      flashPage[sector_number*32 + 1]  = (accelCount[0] & 0xFF00) >> 8; // MSB x-axis accel
       flashPage[sector_number*32 + 2]  = accelCount[0] & 0x00FF;        // LSB x-axis accel
-      flashPage[sector_number*32 + 3]  = accelCount[1] & 0xFF00 >> 8;   // MSB y-axis accel
+      flashPage[sector_number*32 + 3]  = (accelCount[1] & 0xFF00) >> 8; // MSB y-axis accel
       flashPage[sector_number*32 + 4]  = accelCount[1] & 0x00FF;        // LSB y-axis accel
-      flashPage[sector_number*32 + 5]  = accelCount[2] & 0xFF00 >> 8;   // MSB z-axis accel
+      flashPage[sector_number*32 + 5]  = (accelCount[2] & 0xFF00) >> 8; // MSB z-axis accel
       flashPage[sector_number*32 + 6]  = accelCount[2] & 0x00FF;        // LSB z-axis accel
       flashPage[sector_number*32 + 7]  = rawData[0];                    // eCO2 MSB
       flashPage[sector_number*32 + 8]  = rawData[1];                    // eCO2 LSB
@@ -404,10 +408,10 @@ void loop()
       flashPage[sector_number*32 + 16] = (compHumidity & 0x00FF0000) >> 16;
       flashPage[sector_number*32 + 17] = (compHumidity & 0x0000FF00) >> 8;
       flashPage[sector_number*32 + 18] = (compHumidity & 0x000000FF);
-      flashPage[sector_number*32 + 19] = ((compPress & 0xFF000000) >> 24);
-      flashPage[sector_number*32 + 20] = ((compPress & 0x00FF0000) >> 16);
-      flashPage[sector_number*32 + 21] = ((compPress & 0x0000FF00) >> 8);
-      flashPage[sector_number*32 + 22] = ((compPress & 0x000000FF));
+      flashPage[sector_number*32 + 19] = (compPress & 0xFF000000) >> 24;
+      flashPage[sector_number*32 + 20] = (compPress & 0x00FF0000) >> 16;
+      flashPage[sector_number*32 + 21] = (compPress & 0x0000FF00) >> 8;
+      flashPage[sector_number*32 + 22] = (compPress & 0x000000FF));
       flashPage[sector_number*32 + 23] = Seconds;
       flashPage[sector_number*32 + 24] = Minutes;
       flashPage[sector_number*32 + 25] = Hours;
@@ -430,10 +434,9 @@ void loop()
       Serial.println("Reached last page of SPI flash!"); Serial.println("Data logging stopped!");
     }
 
-    digitalWrite(myLed, LOW);   // set the LED off
     }
-      
-      STM32.sleep();    // time out in stop mode to save power, wake on alarm or sensor interrupt
+      Serial2.flush();
+      STM32.stop();    // time out in stop mode to save power, wake on alarm or sensor interrupt
  
 }
 
